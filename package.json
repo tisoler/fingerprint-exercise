@@ -1,0 +1,20 @@
+{
+  "name": "fingerprint-exercise",
+  "version": "1.0.0",
+  "description": "Write a prioritize function body, which returns a subset of transactions that have the maximum total USD in a given totalTime. For example, if the totalTime parameter is 1000ms, the total time of the prioritized transactions should be less than or equal to 1000ms.",
+  "main": "index.js",
+  "author": "diegodiazbarroso",
+  "license": "MIT",
+  "private": false,
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/transactions.js"
+  },
+  "dependencies": {
+    "fs": "^0.0.1-security",
+    "typescript": "^4.7.4"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0"
+  }
+}
