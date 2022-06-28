@@ -7,16 +7,21 @@ interface TransactionSpeed {
   speed: number,
 }
 
+interface TransactionSpeedDict {
+  [country: string]: number
+}
+
 interface Transaction {
   id: string,
   amount: number,
   rate: number,
   speed: number,
+  country: string,
 }
 
-interface TransactionsByCountry { [country: string]: { speed: number, transactions: Transaction[] }}
+interface TransactionsBySpeed { [speed: number]: Transaction[] }
 
-const getTransactionSpeedsArray = (): TransactionSpeed[] => {
+const getTransactionSpeedsDict = (): TransactionSpeedDict => {
   if (!fs.existsSync(`./${API_LATENCIES}`)) {
     throw new Error('There is not API_LATENCIES file.')
   }
@@ -26,6 +31,7 @@ const getTransactionSpeedsArray = (): TransactionSpeed[] => {
     throw new Error('There are not transaction data in the API_LATENCIES file.')
   }
 
+  // Build a sorted array of country speeds
   const transactionSpeeds: TransactionSpeed[] = []
   transactionSpeedKeys.forEach(country => {
     let added = false
@@ -42,100 +48,112 @@ const getTransactionSpeedsArray = (): TransactionSpeed[] => {
     if (!added) transactionSpeeds.push(transactionSpeed)
   })
 
-  return transactionSpeeds
+  // Create a sorted dictionary by country to facilitate the search
+  const transactionSpeedsByCountry: TransactionSpeedDict = Object.assign({}, ...transactionSpeeds.map((t) => ({[t.country]: t.speed})))
+  return transactionSpeedsByCountry
 }
 
-const getTransactionsArray = (transactionSpeeds: TransactionSpeed[]): TransactionsByCountry => {
+const getTransactionsDict = (transactionSpeedsByCountry: TransactionSpeedDict): TransactionsBySpeed => {
   if (!fs.existsSync(`./${TRANSACTIONS}`)) {
     throw new Error('There is not TRANSACTIONS file.')
   }
   const data = fs.readFileSync(`./${TRANSACTIONS}`, "utf8")
   const rows = data.split("\n")
 
-  // Create a sorted dictionary (by speed) with all the transactions by country (from the transactionSpeeds array)
-  const transactionsByCountry: TransactionsByCountry = Object.assign({}, ...transactionSpeeds.map((t) => ({[t.country]: { speed: t.speed, transactions: [] }})));
-  // Skip header
+  // Create a sorted dictionary with all the transactions grouped by speed (based on the transactionSpeedsByCountry array)
+  const uniqueSpeeds = Object.values(transactionSpeedsByCountry)
+  const transactionsBySpeed: TransactionsBySpeed = Object.assign({}, ...[...new Set(uniqueSpeeds)]?.map(speed => ({ [speed]: [] })))
+
+  // Skip header - column names
   for (let i = 1; i < rows.length; i++) {
     const rowArray = rows[i].split(",")
     if (rowArray.length < 3 || !rowArray[2]) {
       throw new Error(`No country for transaction ${rowArray[0] ?? ''}`)
     }
-    const country = rowArray[2]
+    const transactionCountry = rowArray[2]
 
     if (isNaN(rowArray[1] as any)) {
       throw new Error(`No valid amount for transaction ${rowArray[0] ?? ''}`)
     }
     
-    const currentTransactionsByCountry = transactionsByCountry[country]
-    if (!currentTransactionsByCountry) {
-      throw new Error(`No country data for ${country} - Transaction ${rowArray[0] ?? ''}`)
+    const transactionSpeed = transactionSpeedsByCountry[transactionCountry]
+    if (!transactionSpeed) {
+      throw new Error(`No country data for ${transactionCountry} - Transaction ${rowArray[0] ?? ''}`)
     } else {
       const transaction: Transaction = {
         id: rowArray[0],
         amount: parseFloat(rowArray[1]),
-        rate: (parseFloat(rowArray[1]) / currentTransactionsByCountry.speed),
-        speed: currentTransactionsByCountry.speed
+        rate: parseFloat(rowArray[1]) / transactionSpeed,
+        speed: transactionSpeed,
+        country: transactionCountry,
       }
       
       // Add sorted element
       let added = false
-      const countryTransactions = currentTransactionsByCountry.transactions
-      for (let j = 0; j < countryTransactions.length; j ++) {
-        if (countryTransactions[j].amount < transaction.amount) {
-          countryTransactions.splice(j, 0, transaction)
+      const speedTransactions = transactionsBySpeed[transactionSpeed]
+      for (let j = 0; j < speedTransactions.length; j ++) {
+        if (speedTransactions[j].amount < transaction.amount) {
+          speedTransactions.splice(j, 0, transaction)
           added = true
           break
         }
       }
       // If it is the last one, then insert it
-      if (!added) currentTransactionsByCountry.transactions.push(transaction)
+      if (!added) speedTransactions.push(transaction)
     }
   }
-  return transactionsByCountry
+  return transactionsBySpeed
 }
 
 // function should return a subset (or full array)
 // that will maximize the USD value and fit the transactions under 1 second
-function prioritize(transactionsByCountry: TransactionsByCountry, totalTime: number = 1000): Transaction[] {
-  const transactionsByCountryArray = Object.values(transactionsByCountry)
+function prioritize(transactionsBySpeed: TransactionsBySpeed, totalTime: number = 1000): Transaction[] {
+  // Create a sorted array to facilitate the order and decrease the number of iterations
+  const transactionsBySpeedArray = Object.entries(transactionsBySpeed).map(([speed, transactions]) => ({speed: parseInt(speed), transactions}))
   const prioritizedTransactions: Transaction[] = []
   let remainingTime = totalTime
-  let currentIndex: number
-  
-  const setNewIndex = () => {
-    currentIndex = -1
-    for (let i = transactionsByCountryArray.length - 1; i >= 0; i--) {
-      if (transactionsByCountryArray[i].speed <= remainingTime) {
+  let currentIndex = transactionsBySpeedArray.length - 1
+
+  const updateIndex = () => {
+    for (let i = currentIndex; i >= 0; i--) {
+      if (transactionsBySpeedArray[i].speed <= remainingTime) {
         currentIndex = i
-        break
+        return
       }
     }
+    currentIndex = -1
   }
   // Initialize index
-  setNewIndex()
+  updateIndex()
 
   while (remainingTime > 0 && currentIndex >= 0) {
-    let selectedCountryTransactionIndex: number
+    let selectedSpeedTransactionIndex = -1
     let bestRate: number = -1
 
     // Get next best transactiomn
     for (let i = currentIndex; i >= 0; i--) {
-      const countryTransactions = transactionsByCountryArray[i].transactions
-      const bestRateForCountry = countryTransactions[0].rate
+      const speedTransactions = transactionsBySpeedArray[i].transactions
+      if (!speedTransactions.length) continue
+      const bestRateForCountry = speedTransactions[0].rate
       if (bestRate < bestRateForCountry) {
-        selectedCountryTransactionIndex = i
+        selectedSpeedTransactionIndex = i
         bestRate = bestRateForCountry
       }
     }
 
-    const selectedCountryTransations = transactionsByCountryArray[selectedCountryTransactionIndex]
-    // Add the current best transaction to the resut and remove it from the list by country to avoid selecting it again
+    // If there are nor more items it exits
+    if (selectedSpeedTransactionIndex < 0) break
+
+    const selectedCountryTransations = transactionsBySpeedArray[selectedSpeedTransactionIndex]
+    // Add the current best transaction to the resut and remove it from the list by speed to avoid selecting it again
     const bestTransaction = selectedCountryTransations.transactions.shift()
     prioritizedTransactions.push(bestTransaction)
     // Update remainingTime
     remainingTime -= selectedCountryTransations.speed
     // Set new index
-    setNewIndex()
+    updateIndex()
+    // Reset local index
+    selectedSpeedTransactionIndex = -1
   }
 
   return prioritizedTransactions
@@ -143,12 +161,12 @@ function prioritize(transactionsByCountry: TransactionsByCountry, totalTime: num
 
 const main = () => {
   try {
-    // Get totalTime from params
+    // Get totalTime from arguments
     const args = process.argv.slice(2);
     const totalTime = args[0] && !isNaN(args[0] as any) ? parseInt(args[0]) : undefined
 
-    const transactionSpeeds = getTransactionSpeedsArray()
-    const transactions = getTransactionsArray(transactionSpeeds)
+    const transactionSpeeds = getTransactionSpeedsDict()
+    const transactions = getTransactionsDict(transactionSpeeds)
     const result = prioritize(transactions, totalTime)
     console.log({
       transactions: result,
