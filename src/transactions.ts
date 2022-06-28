@@ -12,11 +12,11 @@ interface TransactionSpeedDict {
 }
 
 interface Transaction {
-  id: string,
-  amount: number,
-  rate: number,
-  speed: number,
-  country: string,
+  ID: string,
+  Amount: number,
+  BankCountryCode: string,
+  Rate: number,
+  Speed: number,
 }
 
 interface TransactionsBySpeed { [speed: number]: Transaction[] }
@@ -81,18 +81,18 @@ const getTransactionsDict = (transactionSpeedsByCountry: TransactionSpeedDict): 
       throw new Error(`No country data for ${transactionCountry} - Transaction ${rowArray[0] ?? ''}`)
     } else {
       const transaction: Transaction = {
-        id: rowArray[0],
-        amount: parseFloat(rowArray[1]),
-        rate: parseFloat(rowArray[1]) / transactionSpeed,
-        speed: transactionSpeed,
-        country: transactionCountry,
+        ID: rowArray[0],
+        Amount: parseFloat(rowArray[1]),
+        BankCountryCode: transactionCountry,
+        Rate: parseFloat(rowArray[1]) / transactionSpeed,
+        Speed: transactionSpeed,
       }
       
       // Add sorted element
       let added = false
       const speedTransactions = transactionsBySpeed[transactionSpeed]
       for (let j = 0; j < speedTransactions.length; j ++) {
-        if (speedTransactions[j].amount < transaction.amount) {
+        if (speedTransactions[j].Amount < transaction.Amount) {
           speedTransactions.splice(j, 0, transaction)
           added = true
           break
@@ -134,7 +134,7 @@ function prioritize(transactionsBySpeed: TransactionsBySpeed, totalTime: number 
     for (let i = currentIndex; i >= 0; i--) {
       const speedTransactions = transactionsBySpeedArray[i].transactions
       if (!speedTransactions.length) continue
-      const bestRateForCountry = speedTransactions[0].rate
+      const bestRateForCountry = speedTransactions[0].Rate
       if (bestRate < bestRateForCountry) {
         selectedSpeedTransactionIndex = i
         bestRate = bestRateForCountry
@@ -168,11 +168,13 @@ const main = () => {
     const transactionSpeeds = getTransactionSpeedsDict()
     const transactions = getTransactionsDict(transactionSpeeds)
     const result = prioritize(transactions, totalTime)
+
+    const totalAmount = result.reduce((ac: number, transaction: Transaction) => ac + transaction.Amount, 0)
     console.log({
       transactions: result,
       transactionsQuantity: result.length,
-      totalAmount: result.reduce((ac: number, transaction: Transaction) => ac + transaction.amount, 0),
-      totalSpeed: result.reduce((ac: number, transaction: Transaction) => ac + transaction.speed, 0),
+      totalAmount: Math.round(totalAmount * 100) / 100,
+      totalSpeed: result.reduce((ac: number, transaction: Transaction) => ac + transaction.Speed, 0),
     })
   } catch (e) {
     console.error(`ÈRROR: ${e.message || 'Internal server error'}.`)
