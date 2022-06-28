@@ -1,3 +1,4 @@
+require('dotenv').config()
 import { API_LATENCIES, TRANSACTIONS } from "./constants"
 import * as fs from 'fs'
 
@@ -17,14 +18,12 @@ interface TransactionsByCountry { [country: string]: { speed: number, transactio
 
 const getTransactionSpeedsArray = (): TransactionSpeed[] => {
   if (!fs.existsSync(`./${API_LATENCIES}`)) {
-    console.error('There is not API_LATENCIES file.')
-    return
+    throw new Error('There is not API_LATENCIES file.')
   }
   const transactionSpeedRates = require(`../${API_LATENCIES}`)
   const transactionSpeedKeys = Object.keys(transactionSpeedRates)
   if (!transactionSpeedRates || !transactionSpeedKeys.length) {
-    console.error('There are not transaction data in the API_LATENCIES file.')
-    return
+    throw new Error('There are not transaction data in the API_LATENCIES file.')
   }
 
   const transactionSpeeds: TransactionSpeed[] = []
@@ -48,8 +47,7 @@ const getTransactionSpeedsArray = (): TransactionSpeed[] => {
 
 const getTransactionsArray = (transactionSpeeds: TransactionSpeed[]): TransactionsByCountry => {
   if (!fs.existsSync(`./${TRANSACTIONS}`)) {
-    console.error('There is not TRANSACTIONS file.')
-    return
+    throw new Error('There is not TRANSACTIONS file.')
   }
   const data = fs.readFileSync(`./${TRANSACTIONS}`, "utf8")
   const rows = data.split("\n")
@@ -60,20 +58,17 @@ const getTransactionsArray = (transactionSpeeds: TransactionSpeed[]): Transactio
   for (let i = 1; i < rows.length; i++) {
     const rowArray = rows[i].split(",")
     if (rowArray.length < 3 || !rowArray[2]) {
-      console.error(`No country for transaction ${rowArray[0] ?? ''}`)
-      return
+      throw new Error(`No country for transaction ${rowArray[0] ?? ''}`)
     }
     const country = rowArray[2]
 
     if (isNaN(rowArray[1] as any)) {
-      console.error(`No valid amount for transaction ${rowArray[0] ?? ''}`)
-      return
+      throw new Error(`No valid amount for transaction ${rowArray[0] ?? ''}`)
     }
     
     const currentTransactionsByCountry = transactionsByCountry[country]
     if (!currentTransactionsByCountry) {
-      console.error(`No country data for ${country} - Transaction ${rowArray[0] ?? ''}`)
-      return
+      throw new Error(`No country data for ${country} - Transaction ${rowArray[0] ?? ''}`)
     } else {
       const transaction: Transaction = {
         id: rowArray[0],
@@ -147,19 +142,23 @@ function prioritize(transactionsByCountry: TransactionsByCountry, totalTime: num
 }
 
 const main = () => {
-  // Get totalTime from params
-  const args = process.argv.slice(2);
-  const totalTime = args[0] && !isNaN(args[0] as any) ? parseInt(args[0]) : undefined
+  try {
+    // Get totalTime from params
+    const args = process.argv.slice(2);
+    const totalTime = args[0] && !isNaN(args[0] as any) ? parseInt(args[0]) : undefined
 
-  const transactionSpeeds = getTransactionSpeedsArray()
-  const transactions = getTransactionsArray(transactionSpeeds)
-  const result = prioritize(transactions, totalTime)
-  console.log({
-    transactions: result,
-    transactionsQuantity: result.length,
-    totalAmount: result.reduce((ac: number, transaction: Transaction) => ac + transaction.amount, 0),
-    totalSpeed: result.reduce((ac: number, transaction: Transaction) => ac + transaction.speed, 0),
-  })
+    const transactionSpeeds = getTransactionSpeedsArray()
+    const transactions = getTransactionsArray(transactionSpeeds)
+    const result = prioritize(transactions, totalTime)
+    console.log({
+      transactions: result,
+      transactionsQuantity: result.length,
+      totalAmount: result.reduce((ac: number, transaction: Transaction) => ac + transaction.amount, 0),
+      totalSpeed: result.reduce((ac: number, transaction: Transaction) => ac + transaction.speed, 0),
+    })
+  } catch (e) {
+    console.error(`ÈRROR: ${e.message || 'Internal server error'}.`)
+  }
 }
 
 main()
