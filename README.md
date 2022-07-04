@@ -21,7 +21,7 @@ The file paths are defined in `constants.js`, you can export them in your env or
 `process.env.TRANSACTIONS || 'dataSources/transactions.csv'`
 
 ### Question: What is the max USD value that can be processed in 50ms, 60ms, 90ms, 1000ms?
-50ms: 3637.98
-60ms: 4362.01
-90ms: 6870.48
+50ms: 4139.43
+60ms: 4675.71
+90ms: 6972.29
 1000ms: 35471.81

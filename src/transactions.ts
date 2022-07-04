@@ -1,6 +1,7 @@
 require('dotenv').config()
-import { API_LATENCIES, TRANSACTIONS } from "./constants"
+import { API_LATENCIES, LIMIT_TIME_EXHAUSTIVE_SEARCH, TRANSACTIONS } from "./constants"
 import * as fs from 'fs'
+import { cloneDeep } from 'lodash'
 
 interface TransactionSpeed {
   country: string,
@@ -32,21 +33,7 @@ const getTransactionSpeedsDict = (): TransactionSpeedDict => {
   }
 
   // Build a sorted array of country speeds
-  const transactionSpeeds: TransactionSpeed[] = []
-  transactionSpeedKeys.forEach(country => {
-    let added = false
-    const transactionSpeed = { country, speed: transactionSpeedRates[country]}
-    // Add sorted element
-    for (let i = 0; i < transactionSpeeds.length; i ++) {
-      if (transactionSpeeds[i].speed > transactionSpeedRates[country]) {
-        transactionSpeeds.splice(i, 0, transactionSpeed)
-        added = true
-        break
-      }
-    }
-    // If it is the first element or the last one, then insert it
-    if (!added) transactionSpeeds.push(transactionSpeed)
-  })
+  const transactionSpeeds: TransactionSpeed[] = transactionSpeedKeys.map(country => ({ country, speed: transactionSpeedRates[country]}))
 
   // Create a sorted dictionary by country to facilitate the search
   const transactionSpeedsByCountry: TransactionSpeedDict = Object.assign({}, ...transactionSpeeds.map((t) => ({[t.country]: t.speed})))
@@ -87,7 +74,7 @@ const getTransactionsDict = (transactionSpeedsByCountry: TransactionSpeedDict): 
         Rate: parseFloat(rowArray[1]) / transactionSpeed,
         Speed: transactionSpeed,
       }
-      
+
       // Add sorted element
       let added = false
       const speedTransactions = transactionsBySpeed[transactionSpeed]
@@ -109,54 +96,92 @@ const getTransactionsDict = (transactionSpeedsByCountry: TransactionSpeedDict): 
 // that will maximize the USD value and fit the transactions under 1 second
 function prioritize(transactionsBySpeed: TransactionsBySpeed, totalTime: number = 1000): Transaction[] {
   // Create a sorted array to facilitate the order and decrease the number of iterations
-  const transactionsBySpeedArray = Object.entries(transactionsBySpeed).map(([speed, transactions]) => ({speed: parseInt(speed), transactions}))
-  const prioritizedTransactions: Transaction[] = []
+  const transactionsBySpeedArray: { speed: number, transactions: Transaction[] }[] = Object.entries(transactionsBySpeed)
+    ?.map(([speed, transactions]) => ({speed: parseInt(speed), transactions}))
+
   let remainingTime = totalTime
   let currentIndex = transactionsBySpeedArray.length - 1
 
   const updateIndex = () => {
-    for (let i = currentIndex; i >= 0; i--) {
-      if (transactionsBySpeedArray[i].speed <= remainingTime) {
+    for (let i = transactionsBySpeedArray.length - 1; i >= 0; i--) {
+      const node = transactionsBySpeedArray[i]
+      if (node.speed <= remainingTime && node.transactions.length) {
         currentIndex = i
         return
       }
     }
     currentIndex = -1
   }
-  // Initialize index
+
+  // Initialize currentIndex
   updateIndex()
 
-  while (remainingTime > 0 && currentIndex >= 0) {
-    let selectedSpeedTransactionIndex = -1
-    let bestRate: number = -1
+  let currentBranch: Transaction[] = []
+  let bestBranch: Transaction[] = []
+  let bestAmount = 0
+  let indexLastExcludedTransaction = -1
+  let excludedTransactionRules: { [position: number]: number[] } = {}
+  while (currentIndex >= 0) {
+    let bestTransaction: Transaction = { ID: null, Rate: 0, Amount: null, BankCountryCode: null, Speed: null }
 
     // Get next best transactiomn
     for (let i = currentIndex; i >= 0; i--) {
-      const speedTransactions = transactionsBySpeedArray[i].transactions
-      if (!speedTransactions.length) continue
-      const bestRateForCountry = speedTransactions[0].Rate
-      if (bestRate < bestRateForCountry) {
-        selectedSpeedTransactionIndex = i
-        bestRate = bestRateForCountry
+      const speedNodeTransactions = transactionsBySpeedArray[i].transactions
+      if (!speedNodeTransactions.length) continue
+      const currentBranchIds = currentBranch?.map(cbt => cbt.ID) || []
+      const newBestTransaction = speedNodeTransactions.find(
+        snt => !excludedTransactionRules[currentBranch.length]?.includes(snt.Speed)
+        && !currentBranchIds.includes(snt.ID)
+      )
+      if (!newBestTransaction) continue
+      if (bestTransaction.Rate < newBestTransaction.Rate) {
+        bestTransaction = newBestTransaction
       }
     }
 
-    // If there are nor more items it exits
-    if (selectedSpeedTransactionIndex < 0) break
+    if (bestTransaction.ID) {
+      // Add the current best transaction to the resut
+      currentBranch.push(bestTransaction)
+      // Update remainingTime
+      remainingTime -= bestTransaction.Speed
+      // Update currentIndex
+      updateIndex()
+    }
 
-    const selectedCountryTransations = transactionsBySpeedArray[selectedSpeedTransactionIndex]
-    // Add the current best transaction to the resut and remove it from the list by speed to avoid selecting it again
-    const bestTransaction = selectedCountryTransations.transactions.shift()
-    prioritizedTransactions.push(bestTransaction)
-    // Update remainingTime
-    remainingTime -= selectedCountryTransations.speed
-    // Set new index
-    updateIndex()
-    // Reset local index
-    selectedSpeedTransactionIndex = -1
+    // No more transactions, finalize the process
+    if (!currentBranch.length) break
+
+    // If there are not more items, it evaluates the current branch
+    // Also it excludes speeds for some branch positions
+    if (currentIndex < 0 || !bestTransaction.ID) {
+      const currentAmount = currentBranch.reduce((total, node) => total + node.Amount, 0)
+      if (currentAmount > bestAmount) {
+        bestBranch = cloneDeep(currentBranch)
+        bestAmount = currentAmount
+      }
+      if (remainingTime > 0 || totalTime <= LIMIT_TIME_EXHAUSTIVE_SEARCH) {
+        indexLastExcludedTransaction = bestTransaction.ID ? currentBranch.length - 1 : indexLastExcludedTransaction -= 1
+        // Add exclude rule
+        const excludedSpeedForPosition = currentBranch[currentBranch.length - 1].Speed
+        if (excludedTransactionRules[indexLastExcludedTransaction]) excludedTransactionRules[indexLastExcludedTransaction].push(excludedSpeedForPosition)
+        else excludedTransactionRules[indexLastExcludedTransaction] = [excludedSpeedForPosition]
+        // Clean rules for lower position in the dict
+        Object.keys(excludedTransactionRules).forEach((position) => {
+          if (parseInt(position) > indexLastExcludedTransaction) delete excludedTransactionRules[position]
+        })
+        // Update current branch
+        const transactionsToReInsert = currentBranch.slice(indexLastExcludedTransaction, currentBranch.length)
+        currentBranch.splice(indexLastExcludedTransaction, currentBranch.length - indexLastExcludedTransaction)
+        // Update remaining time
+        remainingTime += transactionsToReInsert.reduce((time, transaction) => time + transaction.Speed, 0)
+        // Update the currentIndex again to continue searching
+        updateIndex()
+        // Move indexLastExcludedTransaction to next higher position
+        if (currentIndex < 0) indexLastExcludedTransaction -= 1
+      }
+    }
   }
-
-  return prioritizedTransactions
+  return bestBranch
 }
 
 const main = () => {
